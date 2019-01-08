@@ -1,0 +1,314 @@
+---
+title:  "Fraud Transaction Detection EDA & Modelling"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+---
+
+##                                       **About the Data**
+
+  I found this dataset on Kaggle. It is a simulator generated dataset of mobile money transactions generated for fraud detection research . There are more than 60 lakh observations (transactions) and there are 11 variables whose descriptions are as follow:
+
+* **step** - maps a unit of time in the real world. In this case 1 step is 1 hour of time. Total steps 744 (30              days simulation).
+
+* **type** - CASH-IN, CASH-OUT, DEBIT, PAYMENT and TRANSFER.
+
+* **amount** - amount of the transaction in local currency.
+
+* **nameOrig** - customer who started the transaction
+
+* **oldbalanceOrg** - initial balance before the transaction
+
+* **newbalanceOrig** - new balance after the transaction
+
+* **nameDest** - customer who is the recipient of the transaction
+
+* **oldbalanceDest** - initial balance of recipient before the transaction.                        
+
+* **newbalanceDest** - new balance of recipient after the transaction.
+
+* **isFraud** - This is the transactions made by the fraudulent agents inside the simulation.
+
+* **isFlaggedFraud** - The business model aims to control massive transfers from one account to another and                           flags illegal attempts. An illegal attempt in this dataset is an attempt to transfer                           more than 200.000 in a single transaction.
+
+
+### Lets take a quick look at the data and its descriptive statistics
+
+```{r message=FALSE, warning=FALSE, comment=FALSE, results='hide'}
+library(dplyr)
+library(caret)
+library(ggplot2)
+library(caTools)
+library(randomForest)
+library(rpart)
+library(rpart.plot)
+library(Matrix)
+library(xgboost)
+library(data.table)
+library(magrittr)
+library(Metrics)
+library(gridExtra)
+transactions<- fread("D:/Shashank R files/Fraud_detection_data/data_file.csv", header = TRUE, stringsAsFactors = TRUE)
+transactions<- as.data.frame(transactions)
+
+```
+
+
+```{r message=FALSE, warning=FALSE}
+head(transactions)
+```
+
+```{r}
+dim(transactions)
+```
+
+
+```{r}
+str(transactions)
+```
+
+```{r}
+summary(transactions)
+```
+ 
+ 
+ 
+ 
+##                                **EDA** - Understanding the Data.
+
+
+
+
+### Total transactions vs Fraud transactions
+ 
+```{r}
+fraud_count<- transactions %>% count(isFraud)
+print(fraud_count)
+```
+
+```{r}
+(fraud_count$n[2]/nrow(transactions))*100
+```
+
+There are only **8213** transactions which are actually **fraud** out of total **6362620** transactions.
+ 
+Only around * **0.13%** * transactions are Fraud.
+
+#### *Let's visualise it*
+
+```{r}
+barplot(prop.table(fraud_count$n)*100, names.arg = c('not fraud' ,  'fraud'), ylab = 'No of Transactions' ,main = "Fraud vs Not Fraud" ,col = 'light pink' , ylim = c(0,100))
+```
+
+
+
+
+
+
+
+### Transaction Type Plot
+
+```{r}
+ggplot(data = transactions, aes(x = type , fill = type)) + geom_bar() + labs(title = "Transactions as per Type",  x = 'Transaction Type' , y = 'No of transactions' ) +theme_classic()
+
+```
+
+
+
+
+
+### Transaction Types which are more likely to be Fraud
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+
+Fraud_trans_type <- transactions %>% group_by(type) %>% summarise(fraud_transactions = sum(isFraud))
+
+ggplot(data = Fraud_trans_type, aes(x = type,  y = fraud_transactions)) + geom_col(aes(fill = 'type'), show.legend = FALSE) + labs(title = 'Fraud transactions as Per type', x = 'Transcation type', y = 'No of Fraud Transactions') + geom_text(aes(label = fraud_transactions), size = 4, hjust = 0.5) + theme_classic()
+
+```
+
+Its clear from the above plot that all the fraud transactions are either CASH_OUT or TRANSFER type.
+
+
+
+
+
+
+
+
+
+```{r}
+
+ggplot(data = transactions[transactions$isFraud==1,], aes(x = amount ,  fill =amount)) + geom_histogram(bins = 30, aes(fill = 'amount')) + labs(title = 'Fraud transaction Amount distribution', y = 'No. of Fraud transacts', x = 'Amount in Dollars')
+```
+
+The Frequency distribution of Amount of money involved in Fraud transactions is **Positively Skewed** . It is Clear that most of the fraud transactions are of **Lesser** amount.
+
+
+
+
+
+
+
+
+
+```{r}
+
+ggplot(data = transactions, aes(x = factor(isFraud) ,y = log1p(amount), fill = factor(isFraud))) + geom_boxplot(show.legend = FALSE) +labs(title= 'Amount- Boxplot' , x = 'isFraud') +  theme_classic()
+
+```
+
+The above boxplot shows that the *Amount* involved in **fraud** transactions is greater than that of in Non Fraud transactions.
+
+
+
+
+
+
+
+
+```{r}
+p1<- ggplot(data = transactions, aes(x = factor(isFraud) ,y = log1p(oldbalanceOrg), fill = factor(isFraud))) + geom_boxplot(show.legend = FALSE) +labs(title= 'Old balance in Origin Accounts' , x = 'isFraud') +  theme_classic()
+
+p2 <- ggplot(data = transactions, aes(x = factor(isFraud) ,y = log1p(oldbalanceDest), fill = factor(isFraud))) + geom_boxplot(show.legend = FALSE) +labs(title= 'Old balance in Destination Accounts' , x = 'isFraud') +  theme_classic()
+
+grid.arrange(p1, p2, nrow = 1)
+
+```
+
+In majority of the fraud transactions the Old balance of the Origin account from which the payments are made is **higher** than rest of the origin accounts while the Old balance in Destination accounts is Lower than rest. This is not at all a surprising observation as fraud transactions are made to * **Steal from the rich and give to the poors.!** * . 
+
+
+
+
+
+### Distribution of transactions at different time intervals
+
+
+```{r message=FALSE, warning=FALSE}
+p3<- ggplot(data = transactions, aes(x = step)) + geom_histogram(bins = 700,aes(fill = 'isFraud'), show.legend = FALSE) +labs(title= 'Total transactions at different Steps (time)', y = 'No. of transactions') + theme_classic()
+
+p4<- ggplot(data = transactions[transactions$isFraud==1,], aes(x = step)) + geom_histogram(bins =700, aes(fill = 'isFraud'), show.legend = FALSE) + theme_classic()+ labs(title= 'Fraud transactions at different steps (time)' , y = 'No. of Fraud transactions')
+
+grid.arrange(p3, p4, ncol = 1, nrow = 2)
+
+```
+
+After **400 step** the total no. of transactions are very **low** but the Fraud transactions doesn't seems to be going down. This looks Surprising. Let's do some more Reasearch here.
+
+
+### converting Step to Hours in 24 hours format
+
+Each step represents 1 hour of real world and there are total 743 steps for 30 days of data . Lets convert them into 24 hours where each day has 1 to 14 hours and the pattern repeats again
+
+```{r}
+transactions$hour <- mod(transactions$step, 24)
+```
+
+```{r}
+p5<- ggplot(data = transactions, aes(x = hour)) + geom_bar(aes(fill = 'isFraud'), show.legend = FALSE) +labs(title= 'Total transactions at different Hours', y = 'No. of transactions') + theme_classic()
+
+p6<-ggplot(data = transactions[transactions$isFraud==1,], aes(x = hour)) + geom_bar(aes(fill = 'isFraud'), show.legend = FALSE) +labs(title= 'Fraud transactions at different Hours', y = 'No. of fraud transactions') + theme_classic()
+
+grid.arrange(p5, p6, ncol = 1, nrow = 2)
+
+```
+ Look at the graphs now, The total no of transactions happening between **0 to 9 hours** are **very low**
+ but Farud transactions are still happening at the same rate. Hence it can be concluded that fraud transactions are very often between **0 to 9 hours**.
+
+
+
+
+
+## Feature Engineering 
+
+Looking closely at the data reveled that there are certain transactions where the transaction Amount is greater than the valancse available in the Origin account.
+
+```{r message=FALSE, warning=FALSE}
+
+ head(transactions[(transactions$amount > transactions$oldbalanceOrg)& (transactions$newbalanceDest > transactions$oldbalanceDest), c("amount","oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest", "isFraud")], 10)
+
+```
+
+
+ Hence let's create a new feature called **'adjustedBalanceOrg'** and **'adjustedBalanceDest'** where
+
+* **adjustedBalanceOrg** = newbalanceOrg + amount - oldbalanceOrg
+* **adjustedBalanceDest** = oldbalanceDest + amount - newbalanceDest
+
+```{r message=FALSE, warning=FALSE, paged.print=TRUE}
+#Creating new features
+transactions$adjustedBalanceOrg<-round(transactions$newbalanceOrig+transactions$amount-transactions$oldbalanceOrg, 2)
+
+transactions$adjustedBalanceDest<-round(transactions$oldbalanceDest+transactions$amount-transactions$newbalanceDest, 2)
+
+colnames(transactions)
+
+```
+
+### Getting Required features
+
+Since all the fraud transactions only occur in CASH_OUT and TRANSFER type, we can only extract those transaction types for modeilling
+```{r}
+# Filtering only CASH_OUT and TRANSFER transactions andd droping irrelevant features
+transactions1<- transactions %>% 
+                select( -one_of('step','nameOrig', 'nameDest', 'isFlaggedFraud')) %>%
+                filter(type %in% c('CASH_OUT','TRANSFER'))
+
+```
+
+
+### Encoding Dummy variables for transaction type
+
+```{r message=FALSE, warning=FALSE}
+library(fastDummies)
+
+transactions1 <- dummy_cols(transactions1, select_columns = 'type')
+colnames(transactions1)
+
+```
+Now we have one 2 columns **type_TRANSFER** and **type_CASH_OUT** encoded into numeric format.
+
+
+## Modelling
+
+Let's begin with building a Model to predict the fraud transactions.
+
+### Splitting the train and test set.
+
+```{r message=FALSE, warning=FALSE}
+set.seed(1)
+spl <- sample.split(transactions1$isFraud, 0.8)
+transactions_train <- transactions1[spl == TRUE,]
+transactions_test <- transactions1[spl == FALSE,]
+
+```
+
+### Training
+
+```{r}
+fit_forest <- randomForest(isFraud ~ ., data = transactions_train, ntree = 20, mtry = 3)
+
+plot(fit_forest)
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
