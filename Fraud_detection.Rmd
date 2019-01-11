@@ -50,8 +50,10 @@ library(data.table)
 library(magrittr)
 library(Metrics)
 library(gridExtra)
+library(rfUtilities)
 transactions<- fread("D:/Shashank R files/Fraud_detection_data/data_file.csv", header = TRUE, stringsAsFactors = TRUE)
 transactions<- as.data.frame(transactions)
+
 
 ```
 
@@ -264,8 +266,8 @@ transactions1<- transactions %>%
 
 ```{r message=FALSE, warning=FALSE}
 library(fastDummies)
-
 transactions1 <- dummy_cols(transactions1, select_columns = 'type')
+transactions1$isFraud <- as.factor(transactions1$isFraud)
 colnames(transactions1)
 
 ```
@@ -286,14 +288,18 @@ transactions_test <- transactions1[spl == FALSE,]
 
 ```
 
+
+
 ### Training
 
-```{r}
+
+
+## Random Forest 
+```{r message=FALSE, warning=FALSE}
+
+set.seed(1)
 fit_forest <- randomForest(isFraud ~ ., data = transactions_train, ntree = 20, mtry = 3)
-
 plot(fit_forest)
-
-
 
 ```
 
@@ -301,14 +307,118 @@ plot(fit_forest)
 
 
 
+### Plotting variable importance
+
+```{r}
+importance_matrix <- data.frame(Variables = rownames(fit_forest$importance), fit_forest$importance, row.names = NULL)
+
+ggplot(data = importance_matrix , aes(y = MeanDecreaseGini , x = Variables, fill = Variables))+ geom_col() + coord_flip() + labs(title= 'Variiable importance plot')+ theme_classic()
+```
 
 
 
 
+### Predicting on test set
+
+```{r}
+pred <- predict(fit_forest, newdata = transactions_test[,-6])
+
+confusion<-confusionMatrix(pred, transactions_test$isFraud )
+print(confusion)
+```
 
 
 
+## XGboost
+
+### Converting the data to XGB.Dmatrix format
+
+```{r}
+x_train <- as.matrix(transactions_train[,-6])
+y_train <- as.numeric(as.character(transactions_train$isFraud))
+
+x_test <- as.matrix((transactions_test[,-6]))
+y_test <- as.numeric(as.character(transactions_test$isFraud))
 
 
+train_xg<- xgb.DMatrix(data = x_train, label = y_train)
+test_xg <- xgb.DMatrix(data = x_test, label = y_test)
+
+```
+
+
+
+### Training XGboost
+
+### XGboost cross validation 
+```{r}
+
+#Parameter Grid
+param = list(booster = "gbtree", max_depth = 2, eval_metric = 'error',  objective = "binary:logistic")
+
+set.seed(1)
+
+xgb_cv <- xgb.cv(params = param, data = train_xg, nrounds = 20, nfold = 10, metrics = 'error' )
+xgb_cv$evaluation_log
+
+```
+
+
+### Train and Validation Errors plot for 20 Rounds
+
+```{r}
+xgb_cv$evaluation_log %>% ggplot(aes(x = iter ,y = train_error_mean, colour = 'blue')) 
+                          + geom_line() + geom_line(aes(y= test_error_mean , colour = 'red'))
+                          
+
+```
+
+The optimal no. of rounds given by the xgboost seems to be 11 Rounds where the error on both **train** and **validation set** is minimum, also the model **doesn't** seems to be **overfitting**, as both the train and validation error follows the **same trend**.
+
+
+
+## Fitting the final model with watchlist for train and test set.
+
+lets fit the XGboost model with a watchlist for train and test set which will also output the train and test set errors. 
+
+```{r}
+param = list(booster = "gbtree", max_depth = 2, eval_metric = 'error',  objective = "binary:logistic")
+fit <- xgb.train(data = train_xg, params = param, nrounds = 11 , watchlist = list(test_set = test_xg, train_set = train_xg))
+
+```
+
+
+# Train and Test set error plot
+
+```{r}
+fit$evaluation_log %>% ggplot(aes(x = iter ,y = train_set_error, colour = 'blue')) + geom_line() + geom_line(aes(y= test_set_error , colour = 'red'))
+```
+
+seems like the the error is highly **minimized** **without any Overfitting**. as the Test set on which the model is not trained is also giving the same error as the train set. Hope the accuracy will also be same for both train and test sets.
+
+
+## Confusion Matrix
+
+```{r}
+pred_xgb <- predict(fit, newdata = test_xg)
+pred1<- ifelse(pred_xgb>0.5,1,0)
+
+confusionMatrix(pred1, y_test)
+```
+**Hurrey!!!**, the **confusion matrix** of the test set looks very impressive. The **TRUE POSITIVE** rate is **100%** while there are only 9 **FALSE POSITIVES** (Positive class being '0').
+
+** ACCURACY ** = **0.9973**
+
+### XGB variable Importance Plot
+
+```{r message=FALSE, warning=FALSE}
+xgb_importance <- xgb.importance(feature_names = names(transactions_train[,-6]) , model = fit)
+
+xgb.ggplot.importance(xgb_importance)
+```
+
+
+
+# THE END
 
 
