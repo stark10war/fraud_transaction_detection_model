@@ -54,7 +54,6 @@ library(rfUtilities)
 transactions<- fread("D:/Shashank R files/Fraud_detection_data/data_file.csv", header = TRUE, stringsAsFactors = TRUE)
 transactions<- as.data.frame(transactions)
 
-
 ```
 
 
@@ -127,7 +126,7 @@ ggplot(data = transactions, aes(x = type , fill = type)) + geom_bar() + labs(tit
 
 Fraud_trans_type <- transactions %>% group_by(type) %>% summarise(fraud_transactions = sum(isFraud))
 
-ggplot(data = Fraud_trans_type, aes(x = type,  y = fraud_transactions)) + geom_col(aes(fill = 'type'), show.legend = FALSE) + labs(title = 'Fraud transactions as Per type', x = 'Transcation type', y = 'No of Fraud Transactions') + geom_text(aes(label = fraud_transactions), size = 4, hjust = 0.5) + theme_classic()
+ggplot(data = Fraud_trans_type, aes(x = type,  y = fraud_transactions)) + geom_col(aes(fill = 'type'), show.legend = FALSE) + labs(title = 'Fraud transactions as Per type', x = 'Transcation type', y = 'No of Fraud Transactions') + geom_text(aes(label = fraud_transactions), size = 4, hjust = 0.5, vjust = 0) + theme_classic()
 
 ```
 
@@ -142,7 +141,6 @@ Its clear from the above plot that all the fraud transactions are either CASH_OU
 
 
 ```{r}
-
 ggplot(data = transactions[transactions$isFraud==1,], aes(x = amount ,  fill =amount)) + geom_histogram(bins = 30, aes(fill = 'amount')) + labs(title = 'Fraud transaction Amount distribution', y = 'No. of Fraud transacts', x = 'Amount in Dollars')
 ```
 
@@ -226,7 +224,7 @@ grid.arrange(p5, p6, ncol = 1, nrow = 2)
 
 ## Feature Engineering 
 
-Looking closely at the data reveled that there are certain transactions where the transaction Amount is greater than the valancse available in the Origin account.
+Looking closely at the data reveled that there are certain transactions where the transaction Amount is greater than the balance available in the Origin account.
 
 ```{r message=FALSE, warning=FALSE}
 
@@ -286,6 +284,11 @@ spl <- sample.split(transactions1$isFraud, 0.8)
 transactions_train <- transactions1[spl == TRUE,]
 transactions_test <- transactions1[spl == FALSE,]
 
+print('Train Set: ')
+table(transactions_train$isFraud)/nrow(transactions_train)*100
+print('Test Set: ')
+table(transactions_test$isFraud)/nrow(transactions_test)*100
+
 ```
 
 
@@ -294,15 +297,30 @@ transactions_test <- transactions1[spl == FALSE,]
 
 
 
-## Random Forest 
+## Decision tree 
 ```{r message=FALSE, warning=FALSE}
 
 set.seed(1)
-fit_forest <- randomForest(isFraud ~ ., data = transactions_train, ntree = 20, mtry = 3)
-plot(fit_forest)
+fit_tree <- rpart(isFraud~., data = transactions_train)
 
 ```
 
+
+
+### Predicting on test set
+
+```{r}
+pred <- predict(fit_tree, newdata = transactions_test[,-6], type ='class')
+
+confusion<-confusionMatrix(pred, transactions_test$isFraud, positive = '1', mode = 'everything')
+print(confusion)
+```
+
+### Ploting the Tree
+```{r}
+ prp(fit_tree)
+
+```
 
 
 
@@ -310,22 +328,14 @@ plot(fit_forest)
 ### Plotting variable importance
 
 ```{r}
-importance_matrix <- data.frame(Variables = rownames(fit_forest$importance), fit_forest$importance, row.names = NULL)
+importance_tree <- data.frame(Variables = names(fit_tree$variable.importance), importance = fit_tree$variable.importance, row.names = NULL)
 
-ggplot(data = importance_matrix , aes(y = MeanDecreaseGini , x = Variables, fill = Variables))+ geom_col() + coord_flip() + labs(title= 'Variiable importance plot')+ theme_classic()
+ggplot(data = importance_tree , aes(y = importance , x = Variables, fill = Variables))+ geom_col() + coord_flip() + labs(title= 'Variiable importance plot')+ theme_classic()
 ```
 
 
 
 
-### Predicting on test set
-
-```{r}
-pred <- predict(fit_forest, newdata = transactions_test[,-6])
-
-confusion<-confusionMatrix(pred, transactions_test$isFraud )
-print(confusion)
-```
 
 
 
@@ -353,13 +363,19 @@ test_xg <- xgb.DMatrix(data = x_test, label = y_test)
 ### XGboost cross validation 
 ```{r}
 
+#calculating weights for positive class
+n_pos<-nrow(transactions_train[transactions_train$isFraud == 1,])
+n_neg<- nrow(transactions_train[transactions_train$isFraud == 0,])
+
+weight <-n_neg/n_pos
+
 #Parameter Grid
-param = list(booster = "gbtree", max_depth = 2, eval_metric = 'error',  objective = "binary:logistic")
+param = list(booster = "gbtree", max_depth = 2, eval_metric = 'error',  objective = "binary:logistic" ,scale_pos_weight = weight )
 
 set.seed(1)
 
-xgb_cv <- xgb.cv(params = param, data = train_xg, nrounds = 20, nfold = 10, metrics = 'error' )
-xgb_cv$evaluation_log
+xgb_cv <- xgb.cv(params = param, data = train_xg, nrounds = 20, nfold = 5, metrics = 'error' )
+
 
 ```
 
@@ -367,8 +383,7 @@ xgb_cv$evaluation_log
 ### Train and Validation Errors plot for 20 Rounds
 
 ```{r}
-xgb_cv$evaluation_log %>% ggplot(aes(x = iter ,y = train_error_mean, colour = 'blue')) 
-                          + geom_line() + geom_line(aes(y= test_error_mean , colour = 'red'))
+xgb_cv$evaluation_log %>% ggplot(aes(x = iter ,y = train_error_mean, colour = 'blue')) + geom_line() + geom_line(aes(y= test_error_mean , colour = 'red')) + scale_color_manual(labels = c("Train error", "Test error"), values = c('blue', 'red')) 
                           
 
 ```
@@ -382,16 +397,20 @@ The optimal no. of rounds given by the xgboost seems to be 11 Rounds where the e
 lets fit the XGboost model with a watchlist for train and test set which will also output the train and test set errors. 
 
 ```{r}
-param = list(booster = "gbtree", max_depth = 2, eval_metric = 'error',  objective = "binary:logistic")
-fit <- xgb.train(data = train_xg, params = param, nrounds = 11 , watchlist = list(test_set = test_xg, train_set = train_xg))
+
+
+param = list(booster = "gbtree", max_depth = 2, eval_metric = 'error',  objective = "binary:logistic", scale_pos_weight = weight)
+set.seed(1)
+fit <- xgb.train(data = train_xg, params = param, nrounds = 19 , watchlist = list(test_set = test_xg, train_set = train_xg))
 
 ```
+
 
 
 # Train and Test set error plot
 
 ```{r}
-fit$evaluation_log %>% ggplot(aes(x = iter ,y = train_set_error, colour = 'blue')) + geom_line() + geom_line(aes(y= test_set_error , colour = 'red'))
+fit$evaluation_log %>% ggplot(aes(x = iter ,y = train_set_error, colour = 'blue')) + geom_line() +geom_line(aes(y= test_set_error , colour = 'red')) + scale_color_manual(labels = c("Train error", "Test error"), values = c('blue', 'red'))
 ```
 
 seems like the the error is highly **minimized** **without any Overfitting**. as the Test set on which the model is not trained is also giving the same error as the train set. Hope the accuracy will also be same for both train and test sets.
@@ -402,12 +421,15 @@ seems like the the error is highly **minimized** **without any Overfitting**. as
 ```{r}
 pred_xgb <- predict(fit, newdata = test_xg)
 pred1<- ifelse(pred_xgb>0.5,1,0)
+confusionMatrix(pred1, y_test, positive = '1',mode = 'everything')
 
-confusionMatrix(pred1, y_test)
+
 ```
-**Hurrey!!!**, the **confusion matrix** of the test set looks very impressive. The **TRUE POSITIVE** rate is **100%** while there are only 9 **FALSE POSITIVES** (Positive class being '0').
+**Hurrey!!!**, the **confusion matrix** of the test set looks very impressive. The **FALSE POSITIVE (Specificity)** rate is **100%** while there are only 9 **FALSE NEGATIVES** (Positive class being '1').
 
 ** ACCURACY ** = **0.9973**
+
+
 
 ### XGB variable Importance Plot
 
@@ -418,7 +440,22 @@ xgb.ggplot.importance(xgb_importance)
 ```
 
 
+## Let's see the miss classified Transactions
+```{r}
+transactions_test$prediction <- pred1
+transactions_test$probabilities <- pred_xgb
+transactions_test[transactions_test$prediction!=transactions_test$isFraud,]
 
-# THE END
+```
+
+
+Need your feedback and Suggestions.!!!
+
+THANKS,
+
+**BY - SHASHANK TANWAR**
+
+#         THE END   
+
 
 
